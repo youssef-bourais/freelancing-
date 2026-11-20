@@ -20,3 +20,5 @@ Thumbs.db
 
 # The engine's jobs, results, logs and downloaded Chrome
 .engine/
+pw_instagram_profile/
+pw_facebook_profile/
