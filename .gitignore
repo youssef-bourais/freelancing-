@@ -22,3 +22,9 @@ Thumbs.db
 .engine/
 pw_instagram_profile/
 pw_facebook_profile/
+
+
+# Outreach logs & scraped lead lists
+*.log
+*_leads.csv
+
