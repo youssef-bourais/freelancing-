@@ -2,10 +2,11 @@
 """
 Facebook Page outreach script (`<country>_facebook_leads.csv`).
 1. Extracts country name from CSV filename (e.g., `spain`).
-2. Calls Qwen (via Ollama) ONCE at startup to detect the country's language
-   and generate the outreach message template offering a website.
-3. For each lead not in `sent_facebook.log`: fills in the business name,
-   opens the page, clicks Message, types & sends, closes chat, and logs the URL.
+2. Calls Qwen (`qwen2.5:7b` by default) ONCE at startup to detect the
+   country's spoken language and generate the outreach message template.
+3. Checks `sent_facebook.log` before each page, skips already-logged URLs,
+   sends the message, closes the chat, logs to `sent_facebook.log`, and
+   prints a final summary.
 """
 
 import argparse
@@ -21,6 +22,20 @@ import requests
 
 OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
 
+# Distinct ANSI colors per step
+RESET = "\033[0m"
+CYAN = "\033[96m"      # Country, language detection & next page
+MAGENTA = "\033[95m"   # Ollama message generation
+YELLOW = "\033[93m"    # Generated template & log check
+GREEN = "\033[92m"     # Sending, chat close & saved confirmation
+DIM = "\033[90m"       # Skipped page
+RED = "\033[91m"       # Errors & account block
+BLUE = "\033[94m"      # Final summary
+
+
+def colorize(text: str, color: str) -> str:
+  return f"{color}{text}{RESET}"
+
 
 def extract_country_from_filename(csv_path: Path) -> str:
   """Extract country name from filenames like `spain_facebook_leads.csv`."""
@@ -31,8 +46,11 @@ def extract_country_from_filename(csv_path: Path) -> str:
   country = cleaned.replace("_", " ").strip()
   if not country:
     sys.exit(
-        f"Error: Could not extract country from '{csv_path.name}'. "
-        "Name the file like '<country>_facebook_leads.csv'."
+        colorize(
+            f"Error: Could not extract country from '{csv_path.name}'. "
+            "Name the file like '<country>_facebook_leads.csv'.",
+            RED,
+        )
     )
   return country
 
@@ -101,60 +119,110 @@ def fallback_template_for_country(country: str) -> str:
   )
 
 
-def generate_startup_template(
+def call_ollama(
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    ollama_url: str,
+    num_predict: int = 120,
+    temperature: float = 0.2,
+) -> str:
+  payload = {
+      "model": model,
+      "stream": False,
+      "messages": [
+          {"role": "system", "content": system_prompt},
+          {"role": "user", "content": user_prompt},
+      ],
+      "options": {
+          "temperature": temperature,
+          "num_predict": num_predict,
+      },
+  }
+  resp = requests.post(ollama_url, json=payload, timeout=150)
+  resp.raise_for_status()
+  content = (resp.json().get("message") or {}).get("content", "")
+  return clean_qwen_response(content)
+
+
+def detect_language_and_generate_template(
     country: str,
     model: str,
     ollama_url: str,
-) -> str:
-  """Called ONCE at startup: detect country's language and generate base template."""
+) -> tuple[str, str]:
+  """
+  Called ONCE at startup: detects spoken language for `country` and generates
+  a single-line message template containing `{BUSINESS_NAME}`.
+  """
   fallback = fallback_template_for_country(country)
+
+  try:
+    lang_raw = call_ollama(
+        system_prompt=(
+            "Output ONLY the primary spoken language of the country in one or "
+            "two words (e.g., Spanish, French, Arabic, English). No extra text."
+        ),
+        user_prompt=f"Country: {country}",
+        model=model,
+        ollama_url=ollama_url,
+        num_predict=20,
+        temperature=0.0,
+    )
+    words = re.findall(r"[A-Za-zÀ-ÿ-]+", lang_raw)
+    language = words[-1].lower() if words else "spanish"
+  except Exception as exc:
+    language = "spanish"
+    print(colorize(f"language detection warning ({exc}) -> using {language}", RED))
+
+  print(colorize(f"country : {country} | language : {language}", CYAN))
+  print(
+      colorize(
+          f"ollama generate message in {language} for ({country})...",
+          MAGENTA,
+      )
+  )
+
   prompt = (
       f"Country: {country}\n"
-      "Detect the main language of this country and write ONE short, friendly "
-      "Facebook outreach message in that language.\n"
+      f"Spoken language: {language}\n"
+      "Write ONE short, friendly Facebook outreach message in that language.\n"
       "Requirements:\n"
       "- Keep the exact placeholder {BUSINESS_NAME} where the business name goes.\n"
       "- Mention that we found {BUSINESS_NAME} on Google Maps and offer to "
       "create a professional website to help get more customers.\n"
-      "- Keep it to 2 short sentences on a single line.\n"
+      "- Ask if they want a quick example and sign off as BOURAIS busine.\n"
+      "- Keep it to 4 short sentences and always start with hello.\n"
       "- Output ONLY the message text with no notes or explanations."
   )
-  payload = {
-      "model": model,
-      "stream": False,
-      "think": False,
-      "messages": [
-          {
-              "role": "system",
-              "content": (
-                  "You write short outreach messages in the target country's "
-                  "language. Output only the final message text."
-              ),
-          },
-          {"role": "user", "content": prompt},
-      ],
-      "options": {
-          "temperature": 0.2,
-          "num_predict": 120,
-      },
-  }
 
   try:
-    resp = requests.post(ollama_url, json=payload, timeout=150)
-    resp.raise_for_status()
-    raw = (resp.json().get("message") or {}).get("content", "")
-    cleaned = clean_qwen_response(raw)
+    cleaned = call_ollama(
+        system_prompt=(
+            f"You write short outreach messages in {language}. Output ONLY "
+            "the final message text."
+        ),
+        user_prompt=prompt,
+        model=model,
+        ollama_url=ollama_url,
+        num_predict=140,
+        temperature=0.2,
+    )
     if not cleaned or len(cleaned) > 450:
-      print("[Startup Template] Qwen output empty/too long -> using fallback.")
-      return fallback
+      print(
+          colorize(
+              "startup template empty/too long -> using fallback",
+              YELLOW,
+          )
+      )
+      return language, fallback
     if "{BUSINESS_NAME}" not in cleaned:
       cleaned = cleaned.replace("{business_name}", "{BUSINESS_NAME}")
       if "{BUSINESS_NAME}" not in cleaned:
         cleaned = f"{cleaned} ({'{BUSINESS_NAME}'})"
-    return cleaned
+    return language, cleaned
   except Exception as exc:
-    print(f"[Startup Template] Ollama warning ({exc}) -> using fallback.")
-    return fallback
+    print(colorize(f"ollama warning ({exc}) -> using fallback", RED))
+    return language, fallback
 
 
 def normalize_fb_url(raw_url: str) -> str:
@@ -179,23 +247,49 @@ def normalize_fb_url(raw_url: str) -> str:
   return urlunparse(("https", host, path, "", "", "")).lower()
 
 
-def load_sent_log(log_path: Path) -> set[str]:
+def resolve_log_paths(
+    log_arg: str, script_dir: Path, csv_dir: Path
+) -> tuple[Path, list[Path]]:
+  p = Path(log_arg)
+  if p.is_absolute():
+    return p.resolve(), [p.resolve()]
+
+  candidates: list[Path] = []
+  for base in (script_dir, Path.cwd(), csv_dir):
+    resolved = (base / p).resolve()
+    if resolved not in candidates:
+      candidates.append(resolved)
+
+  existing = [c for c in candidates if c.exists()]
+  primary = existing[0] if existing else (script_dir / p).resolve()
+  return primary, candidates
+
+
+def load_sent_log(log_paths: list[Path]) -> set[str]:
   sent: set[str] = set()
-  if not log_path.exists():
-    return sent
-  for line in log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-    entry = line.strip()
-    if entry:
-      sent.add(entry.casefold())
-      norm = normalize_fb_url(entry)
-      if norm:
-        sent.add(norm.casefold())
+  for lp in log_paths:
+    if not lp.exists():
+      continue
+    for line in lp.read_text(encoding="utf-8", errors="ignore").splitlines():
+      entry = line.strip()
+      if entry:
+        sent.add(entry.casefold())
+        norm = normalize_fb_url(entry)
+        if norm:
+          sent.add(norm.casefold())
   return sent
 
 
-def append_sent_log(log_path: Path, fb_url: str) -> None:
+def save_sent_log(log_path: Path, sent_set: set[str], fb_url: str) -> None:
+  norm = normalize_fb_url(fb_url) or fb_url.strip().casefold()
+  if not norm:
+    return
+  sent_set.add(norm)
+  sent_set.add(fb_url.strip().casefold())
+  log_path.parent.mkdir(parents=True, exist_ok=True)
   with open(log_path, mode="a", encoding="utf-8") as f:
-    f.write(fb_url.strip().casefold() + "\n")
+    f.write(norm + "\n")
+    f.flush()
 
 
 def is_valid_page_url(url: str) -> bool:
@@ -210,6 +304,59 @@ def is_valid_page_url(url: str) -> bool:
       "/sharer.php",
   ]
   return not any(seg in url.lower() for seg in bad_segments)
+
+
+def load_leads_from_csv(csv_path: Path) -> tuple[list[tuple[str, str]], int]:
+  """Load all valid (business_name, normalized_fb_url) rows."""
+  leads: list[tuple[str, str]] = []
+  seen: set[str] = set()
+
+  with open(csv_path, mode="r", encoding="utf-8-sig", newline="") as f:
+    reader = csv.reader(f, skipinitialspace=True)
+    rows = [r for r in reader if any(cell.strip() for cell in r)]
+
+  if not rows:
+    return leads, 0
+
+  first_lower = [c.strip().lower() for c in rows[0]]
+  has_header = any(
+      h in ("facebook", "fb", "url", "link", "business name", "name", "business")
+      for h in first_lower
+  )
+
+  if has_header:
+    hmap = {h: idx for idx, h in enumerate(first_lower)}
+    name_idx = next(
+        (hmap[k] for k in ("business name", "name", "business") if k in hmap),
+        0,
+    )
+    fb_idx = next(
+        (hmap[k] for k in ("facebook", "fb", "url", "link") if k in hmap),
+        1 if len(rows[0]) > 1 else 0,
+    )
+    data_rows = rows[1:]
+  else:
+    name_idx = 0
+    fb_idx = 1 if len(rows[0]) > 1 else 0
+    data_rows = rows
+
+  for r in data_rows:
+    raw_name = r[name_idx].strip() if name_idx < len(r) else ""
+    raw_fb = r[fb_idx].strip() if fb_idx < len(r) else ""
+    if "facebook.com" not in raw_fb.lower():
+      for cell in r:
+        if "facebook.com" in cell.lower():
+          raw_fb = cell.strip()
+          break
+    norm_url = normalize_fb_url(raw_fb)
+    if not norm_url or not is_valid_page_url(norm_url):
+      continue
+    if norm_url in seen:
+      continue
+    seen.add(norm_url)
+    leads.append((raw_name or "there", norm_url))
+
+  return leads, len(data_rows)
 
 
 def is_logged_in(page) -> bool:
@@ -334,6 +481,8 @@ def close_messenger_chat(page) -> None:
 
 
 def main() -> None:
+  script_dir = Path(__file__).resolve().parent
+
   parser = argparse.ArgumentParser(
       description=(
           "Send Facebook Page messages using country name from CSV filename "
@@ -343,8 +492,8 @@ def main() -> None:
   parser.add_argument("csv_file", help="Path to <country>_facebook_leads.csv")
   parser.add_argument(
       "--model",
-      default="qwen3:4b",
-      help="Local Ollama model name (default: qwen3:4b)",
+      default="qwen2.5:7b",
+      help="Local Ollama model name (default: qwen2.5:7b)",
   )
   parser.add_argument(
       "--ollama-url",
@@ -352,10 +501,15 @@ def main() -> None:
       help=f"Ollama chat API URL (default: {OLLAMA_CHAT_URL})",
   )
   parser.add_argument(
+      "--log-file",
+      default="sent_facebook.log",
+      help="Log file for sent Facebook URLs (default: sent_facebook.log)",
+  )
+  parser.add_argument(
       "--limit",
       type=int,
-      default=15,
-      help="Max pages to process in this run (default: 15)",
+      default=0,
+      help="Max NEW messages to send in this run (0 = all rows, default: 0)",
   )
   parser.add_argument(
       "--min-delay",
@@ -386,51 +540,40 @@ def main() -> None:
   )
   args = parser.parse_args()
 
-  csv_path = Path(args.csv_file)
+  csv_path = Path(args.csv_file).resolve()
   if not csv_path.exists():
-    sys.exit(f"Error: File not found: {csv_path}")
+    sys.exit(
+        colorize(f"Error: File not found: {csv_path}", RED)
+    )
+
+  primary_log, all_logs = resolve_log_paths(
+      args.log_file, script_dir, csv_path.parent
+  )
+  sent_entries = load_sent_log(all_logs)
 
   country = extract_country_from_filename(csv_path)
-  print(f"[Country] {country} | [Model] {args.model}")
-
-  # Generate the message template ONCE at the beginning of the script
-  message_template = generate_startup_template(
+  _, message_template = detect_language_and_generate_template(
       country=country,
       model=args.model,
       ollama_url=args.ollama_url,
   )
-  print(f"[Startup Template] {message_template}")
+  print(colorize(f"message template : {message_template}", YELLOW))
 
-  log_path = Path("sent_facebook.log")
-  sent_entries = load_sent_log(log_path)
-  print(f"[Log] Loaded {len(sent_entries)} entries from {log_path}")
+  all_leads, raw_rows = load_leads_from_csv(csv_path)
+  total_leads = len(all_leads)
+  filtered_out = max(0, raw_rows - total_leads)
+  print(
+      colorize(
+          f"get {total_leads} pages from {csv_path.name} "
+          f"({raw_rows} total rows, {filtered_out} non-page/duplicate skipped)",
+          CYAN,
+      )
+  )
 
-  leads = []
-  with open(csv_path, mode="r", encoding="utf-8-sig", newline="") as f:
-    for row in csv.DictReader(f):
-      name = (row.get("Business name") or "").strip()
-      raw_url = (row.get("Facebook") or "").strip()
-      if not name or not raw_url:
-        continue
-      norm_url = normalize_fb_url(raw_url)
-      if not norm_url or not is_valid_page_url(norm_url):
-        continue
-
-      if (
-          norm_url.casefold() in sent_entries
-          or raw_url.strip().casefold() in sent_entries
-      ):
-        print(f"[SKIP - Already in {log_path}] {name} ({norm_url})")
-        continue
-
-      sent_entries.add(norm_url.casefold())
-      leads.append((name, norm_url))
-
-  print(f"[Queue] {len(leads)} unsent pages (limit: {args.limit})")
-  if not leads:
+  if not all_leads:
+    print(colorize("Summary -> sent: 0 | not sent: 0", BLUE))
     return
 
-  batch = leads[: args.limit]
   launch_kwargs = {
       "user_data_dir": args.profile_dir,
       "headless": False,
@@ -438,6 +581,9 @@ def main() -> None:
   }
   if args.use_chrome:
     launch_kwargs["channel"] = "chrome"
+
+  sent_count = 0
+  not_sent_count = 0
 
   with sync_playwright() as p:
     context = p.chromium.launch_persistent_context(**launch_kwargs)
@@ -447,8 +593,11 @@ def main() -> None:
 
     if not is_logged_in(page):
       print(
-          "\n[Login] Please log into Facebook in Chrome. Waiting up to 3"
-          " minutes..."
+          colorize(
+              "\n[Login] Please log into Facebook in Chrome. Waiting up to 3"
+              " minutes...",
+              YELLOW,
+          )
       )
       page.wait_for_selector(
           "input[name='email']", state="detached", timeout=180000
@@ -457,26 +606,44 @@ def main() -> None:
 
     close_messenger_chat(page)
 
-    sent_count = 0
-    for idx, (name, fb_url) in enumerate(batch, 1):
-      print(f"\n[{idx}/{len(batch)}] {name} -> {fb_url}")
-      close_messenger_chat(page)
+    for idx, (name, fb_url) in enumerate(all_leads, 1):
+      if args.limit > 0 and sent_count >= args.limit:
+        break
 
-      # Reuse the single startup template without calling Qwen again
+      print(
+          colorize(
+              f"[{idx}/{total_leads}] check if {fb_url} is in {primary_log.name}",
+              YELLOW,
+          )
+      )
+      if (
+          fb_url.casefold() in sent_entries
+          or fb_url.strip().casefold() in sent_entries
+      ):
+        not_sent_count += 1
+        print(
+            colorize(
+                f"skipped (already in {primary_log.name}): {fb_url}", DIM
+            )
+        )
+        continue
+
+      close_messenger_chat(page)
       message_text = message_template.replace("{BUSINESS_NAME}", name)
-      print(f"   [Message] {message_text}")
+      print(colorize(f"opening {name} : {fb_url}", CYAN))
 
       try:
         page.goto(fb_url, wait_until="domcontentloaded", timeout=30000)
       except Exception as exc:
-        print(f"   [SKIP] Navigation error: {exc}")
+        not_sent_count += 1
+        print(colorize(f"not sent ({name}): {exc}", RED))
         continue
 
       time.sleep(random.uniform(4.0, 6.5))
 
       blocked, reason = has_account_block(page)
       if blocked:
-        print(f"\n[STOP] Stopped: {reason}")
+        print(colorize(f"\n[STOP] Stopped: {reason}", RED))
         break
 
       msg_btn = page.locator(
@@ -491,20 +658,27 @@ def main() -> None:
       ).first
 
       if msg_btn.count() == 0:
-        print(f"   [SKIP] No Message button on {name}; logging to {log_path}.")
-        append_sent_log(log_path, fb_url)
+        not_sent_count += 1
+        save_sent_log(primary_log, sent_entries, fb_url)
+        print(
+            colorize(
+                f"skipped (no Message button, logged to {primary_log.name}): {fb_url}",
+                DIM,
+            )
+        )
         continue
 
       try:
         msg_btn.click(timeout=6000)
         time.sleep(random.uniform(3.0, 5.0))
       except Exception as exc:
-        print(f"   [SKIP] Failed clicking Message button: {exc}")
+        not_sent_count += 1
+        print(colorize(f"not sent ({name}): {exc}", RED))
         continue
 
       blocked, reason = has_account_block(page)
       if blocked:
-        print(f"\n[STOP] Stopped after opening chat: {reason}")
+        print(colorize(f"\n[STOP] Stopped after opening chat: {reason}", RED))
         break
 
       chat_box = page.locator(
@@ -517,36 +691,55 @@ def main() -> None:
       ).last
 
       if chat_box.count() == 0:
-        print(f"   [SKIP] Chat input box not found for {name}.")
+        not_sent_count += 1
+        print(colorize(f"not sent ({name}): chat box not found", RED))
         close_messenger_chat(page)
         continue
 
       try:
+        print(colorize(f"sending message to {name} ({fb_url})", GREEN))
         if args.dry_run:
           chat_box.click(timeout=5000)
           time.sleep(0.5)
           chat_box.press_sequentially(
               message_text, delay=random.randint(20, 45)
           )
-          print(f"   [DRY RUN] Typed message for {name} (not sent).")
+          sent_count += 1
+          print(colorize(f"[dry-run] typed message for {name}", GREEN))
         else:
           send_message_and_verify(page, chat_box, message_text)
-          append_sent_log(log_path, fb_url)
+          save_sent_log(primary_log, sent_entries, fb_url)
           sent_count += 1
-          print(f"   [SENT {sent_count}] Logged {fb_url} to {log_path}.")
+          print(
+              colorize(
+                  f"sent and saved to {primary_log.name}: {fb_url}", GREEN
+              )
+          )
       except Exception as exc:
-        print(f"   [ERROR] Failed on {name}: {exc}")
+        not_sent_count += 1
+        print(colorize(f"not sent ({name}): {exc}", RED))
       finally:
         close_messenger_chat(page)
-        print("   [Chat] Closed.")
+        print(colorize("closed chat", GREEN))
 
-      if idx < len(batch):
+      if idx < total_leads and (args.limit == 0 or sent_count < args.limit):
         wait = random.uniform(args.min_delay, args.max_delay)
-        print(f"   Waiting {wait:.1f}s before next page...")
+        print(
+            colorize(
+                f"next page ({idx + 1}/{total_leads}) in {wait:.1f}s",
+                CYAN,
+            )
+        )
         time.sleep(wait)
 
-    print(f"\n[Done] Sent {sent_count} messages.")
     context.close()
+
+  print(
+      colorize(
+          f"\nSummary -> sent: {sent_count} | not sent: {not_sent_count}",
+          BLUE,
+      )
+  )
 
 
 if __name__ == "__main__":
