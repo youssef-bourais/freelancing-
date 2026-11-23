@@ -4,7 +4,8 @@ Hands-free Instagram DM automation for `<country>_instagram_leads.csv`.
 - Extracts country name from CSV filename (e.g., `spain`).
 - Contacts Ollama (`qwen2.5:7b`) ONCE at startup to detect the spoken language
   and generate a single-line outreach message template with `{BUSINESS_NAME}`.
-- Processes ALL rows in the CSV by default (unless `--limit N` is passed).
+- Automatically sets the default limit to the number of lines in the CSV
+  (unless `--limit N` is passed).
 - Checks `sent_instagram.log`, skips already-sent accounts, clicks the
   profile's Message button, sends the DM, closes the chat view, logs to
   `sent_instagram.log`, and prints a final summary.
@@ -138,7 +139,7 @@ def detect_language_and_generate_dm(
             "Write a short, friendly Instagram DM offering to create a "
             "professional website for {BUSINESS_NAME}, found on Google Maps, "
             "to help get more customers, and ask if they want a quick example. "
-            "Sign off as BOURAIS busine."
+            "Sign off as BOURAIS business."
         ),
         model=model,
         ollama_url=ollama_url,
@@ -295,6 +296,20 @@ def load_leads_from_csv(csv_path: Path) -> list[tuple[str, str]]:
     leads.append((raw_name or "there", norm_url))
 
   return leads
+
+
+def count_csv_lines(csv_path: Path) -> int:
+  with open(csv_path, mode="r", encoding="utf-8-sig", newline="") as f:
+    reader = csv.reader(f, skipinitialspace=True)
+    rows = [r for r in reader if any(cell.strip() for cell in r)]
+  if not rows:
+    return 0
+  first_lower = [c.strip().lower() for c in rows[0]]
+  has_header = any(
+      h in ("instagram", "ig", "url", "link", "business name", "name", "business")
+      for h in first_lower
+  )
+  return len(rows[1:] if has_header else rows)
 
 
 def is_logged_in(page) -> bool:
@@ -466,7 +481,7 @@ def main() -> None:
       "--limit",
       type=int,
       default=0,
-      help="Max NEW DMs to send in this run (0 = process all rows, default: 0)",
+      help="Max NEW DMs to send (0 = auto-set to number of lines in CSV)",
   )
   parser.add_argument(
       "--min-delay",
@@ -516,14 +531,17 @@ def main() -> None:
 
   all_leads = load_leads_from_csv(csv_path)
   total_leads = len(all_leads)
+  csv_line_count = count_csv_lines(csv_path)
+  effective_limit = args.limit if args.limit > 0 else csv_line_count
   print(
       colorize(
-          f"get {total_leads} accounts from {csv_path.name}",
+          f"get {total_leads} accounts from {csv_path.name} "
+          f"(limit set to {effective_limit})",
           CYAN,
       )
   )
 
-  if not all_leads:
+  if not all_leads or effective_limit <= 0:
     print(colorize("Summary -> sent: 0 | not sent: 0", BLUE))
     return
 
@@ -560,7 +578,7 @@ def main() -> None:
     dismiss_notifications_popup(page)
 
     for idx, (name, ig_url) in enumerate(all_leads, 1):
-      if args.limit > 0 and sent_count >= args.limit:
+      if sent_count >= effective_limit:
         break
 
       print(
@@ -660,7 +678,7 @@ def main() -> None:
         close_ig_chat(page)
         print(colorize("closed chat", GREEN))
 
-      if idx < total_leads and (args.limit == 0 or sent_count < args.limit):
+      if idx < total_leads and sent_count < effective_limit:
         wait = random.uniform(args.min_delay, args.max_delay)
         print(
             colorize(

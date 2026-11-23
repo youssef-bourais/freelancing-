@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 Hands-free cold email outreach script for `<country>_email_leads.csv`.
@@ -135,7 +134,7 @@ def generate_startup_message(
       "Write a short, friendly cold outreach email offering to create a "
       "professional website for {BUSINESS_NAME}, which we found on Google Maps, "
       "to help them get more customers. Ask if they would like to see a quick "
-      "example, and sign off as BOURAIS busine.\n"
+      "example, and sign off as BOURAIS business.\n"
       f"Write ONLY in the main language of {country} (no English commentary).\n"
       "Format:\n"
       "SUBJECT: <short subject>\n"
@@ -296,6 +295,20 @@ def load_leads_from_csv(csv_path: Path) -> list[tuple[str, str]]:
   return leads
 
 
+def count_csv_lines(csv_path: Path) -> int:
+  with open(csv_path, mode="r", encoding="utf-8-sig", newline="") as f:
+    reader = csv.reader(f, skipinitialspace=True)
+    rows = [r for r in reader if any(cell.strip() for cell in r)]
+  if not rows:
+    return 0
+  first_lower = [c.strip().lower() for c in rows[0]]
+  has_header = any(
+      h in ("email", "e-mail", "mail", "business name", "name", "business")
+      for h in first_lower
+  )
+  return len(rows[1:] if has_header else rows)
+
+
 def send_email(
     smtp_host: str,
     smtp_port: int,
@@ -360,7 +373,12 @@ def main() -> None:
       "--password",
       default=os.getenv("GMAIL_APP_PASSWORD") or os.getenv("SMTP_PASS") or "",
   )
-  parser.add_argument("--limit", type=int, default=40)
+  parser.add_argument(
+      "--limit",
+      type=int,
+      default=0,
+      help="Max emails to send (0 = auto-set to number of lines in CSV)",
+  )
   parser.add_argument("--min-delay", type=float, default=25.0)
   parser.add_argument("--max-delay", type=float, default=60.0)
   parser.add_argument("--log-file", default="sent_email.log")
@@ -401,15 +419,19 @@ def main() -> None:
   not_sent_count = 0
   total_leads = len(all_leads)
 
+  csv_line_count = count_csv_lines(csv_path)
+  effective_limit = args.limit if args.limit > 0 else csv_line_count
+  print(colorize(f"limit set to {effective_limit} (from {csv_path.name})", CYAN))
+
   for idx, (name, addr) in enumerate(all_leads, 1):
-    if sent_count >= args.limit:
+    if sent_count >= effective_limit:
       break
 
     print(colorize(f"check if {addr} is there in {primary_log.name}", YELLOW))
     if addr in sent_set:
       not_sent_count += 1
       print(colorize(f"skipped (already in {primary_log.name}): {addr}", DIM))
-      if idx < total_leads and sent_count < args.limit:
+      if idx < total_leads and sent_count < effective_limit:
         print(colorize(f"next email ({idx + 1}/{total_leads})", CYAN))
       continue
 
@@ -439,7 +461,7 @@ def main() -> None:
       save_sent_email(primary_log, sent_set, addr)
       sent_count += 1
 
-    if idx < total_leads and sent_count < args.limit:
+    if idx < total_leads and sent_count < effective_limit:
       print(colorize(f"next email ({idx + 1}/{total_leads})", CYAN))
       time.sleep(random.uniform(args.min_delay, args.max_delay))
 

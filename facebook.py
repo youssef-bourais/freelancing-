@@ -4,7 +4,9 @@ Facebook Page outreach script (`<country>_facebook_leads.csv`).
 1. Extracts country name from CSV filename (e.g., `spain`).
 2. Calls Qwen (`qwen2.5:7b` by default) ONCE at startup to detect the
    country's spoken language and generate the outreach message template.
-3. Checks `sent_facebook.log` before each page, skips already-logged URLs,
+3. Automatically sets the default limit to the number of lines in the CSV
+   (unless `--limit N` is passed).
+4. Checks `sent_facebook.log` before each page, skips already-logged URLs,
    sends the message, closes the chat, logs to `sent_facebook.log`, and
    prints a final summary.
 """
@@ -190,7 +192,7 @@ def detect_language_and_generate_template(
       "- Keep the exact placeholder {BUSINESS_NAME} where the business name goes.\n"
       "- Mention that we found {BUSINESS_NAME} on Google Maps and offer to "
       "create a professional website to help get more customers.\n"
-      "- Ask if they want a quick example and sign off as BOURAIS busine.\n"
+      "- Ask if they want a quick example and sign off as BOURAIS business.\n"
       "- Keep it to 4 short sentences and always start with hello.\n"
       "- Output ONLY the message text with no notes or explanations."
   )
@@ -359,6 +361,20 @@ def load_leads_from_csv(csv_path: Path) -> tuple[list[tuple[str, str]], int]:
   return leads, len(data_rows)
 
 
+def count_csv_lines(csv_path: Path) -> int:
+  with open(csv_path, mode="r", encoding="utf-8-sig", newline="") as f:
+    reader = csv.reader(f, skipinitialspace=True)
+    rows = [r for r in reader if any(cell.strip() for cell in r)]
+  if not rows:
+    return 0
+  first_lower = [c.strip().lower() for c in rows[0]]
+  has_header = any(
+      h in ("facebook", "fb", "url", "link", "business name", "name", "business")
+      for h in first_lower
+  )
+  return len(rows[1:] if has_header else rows)
+
+
 def is_logged_in(page) -> bool:
   return (
       page.locator("input[name='email']").count() == 0
@@ -509,7 +525,7 @@ def main() -> None:
       "--limit",
       type=int,
       default=0,
-      help="Max NEW messages to send in this run (0 = all rows, default: 0)",
+      help="Max NEW messages to send (0 = auto-set to number of lines in CSV)",
   )
   parser.add_argument(
       "--min-delay",
@@ -561,16 +577,19 @@ def main() -> None:
 
   all_leads, raw_rows = load_leads_from_csv(csv_path)
   total_leads = len(all_leads)
+  csv_line_count = count_csv_lines(csv_path)
+  effective_limit = args.limit if args.limit > 0 else csv_line_count
   filtered_out = max(0, raw_rows - total_leads)
   print(
       colorize(
           f"get {total_leads} pages from {csv_path.name} "
-          f"({raw_rows} total rows, {filtered_out} non-page/duplicate skipped)",
+          f"(limit set to {effective_limit}; {raw_rows} total rows, "
+          f"{filtered_out} non-page/duplicate skipped)",
           CYAN,
       )
   )
 
-  if not all_leads:
+  if not all_leads or effective_limit <= 0:
     print(colorize("Summary -> sent: 0 | not sent: 0", BLUE))
     return
 
@@ -607,7 +626,7 @@ def main() -> None:
     close_messenger_chat(page)
 
     for idx, (name, fb_url) in enumerate(all_leads, 1):
-      if args.limit > 0 and sent_count >= args.limit:
+      if sent_count >= effective_limit:
         break
 
       print(
@@ -722,7 +741,7 @@ def main() -> None:
         close_messenger_chat(page)
         print(colorize("closed chat", GREEN))
 
-      if idx < total_leads and (args.limit == 0 or sent_count < args.limit):
+      if idx < total_leads and sent_count < effective_limit:
         wait = random.uniform(args.min_delay, args.max_delay)
         print(
             colorize(
@@ -744,4 +763,3 @@ def main() -> None:
 
 if __name__ == "__main__":
   main()
-

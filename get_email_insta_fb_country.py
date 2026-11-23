@@ -379,11 +379,17 @@ def main() -> None:
     sys.exit(f"Error: Missing {enrich_script}. Check --enrich-script.")
 
   country_slug = slugify(args.country)
+  
+  #create country directory
+  country_dir = Path(country_slug)
+  country_dir.mkdir(parents=True, exist_ok=True)
+
   work_dir = Path("pipeline_runs") / country_slug
   cities_csv = work_dir / f"{country_slug}_cities.csv"
   city_out_dir = work_dir / "enriched_cities"
   city_out_dir.mkdir(parents=True, exist_ok=True)
   final_out_dir = Path(args.output_dir)
+  
 
   # 1. Generate or load cities CSV
   if cities_csv.exists() and not args.refresh_cities:
