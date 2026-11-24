@@ -6,5 +6,5 @@ python3 facebook.py *_facebook_leads.csv --use-chrome --min-delay 3 --max-delay 
 f=(*_facebook_leads.csv)
 country="${f%_facebook_leads.csv}"
 
-mv sent_facebook.log  "$country/"
-mv "$country"_facebook_leads.csv "$country/"
+# mv sent_facebook.log  "$country/"
+# mv "$country"_facebook_leads.csv "$country/"

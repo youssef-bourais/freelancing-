@@ -1,0 +1,8 @@
+Country	Priority	My reasoning
+France	First	You already target it; favorable B2B prospecting conditions
+United Kingdom	Second	English-speaking market and good business opportunities
+Ireland	Third	English-speaking, relatively accessible B2B market
+Sweden	Fourth	Good purchasing potential, but language localization matters
+Finland	Fifth	Interesting market, but localization is important
+Belgium	Sixth	French-speaking and Dutch-speaking business markets
+Portugal	Seventh	Interesting small-business market

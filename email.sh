@@ -5,8 +5,8 @@
 # python3 emailqwen.py *_email_leads.csv --limit 81
 python3 emaill.py *_email_leads.csv 
 
-f=(*_email_leads.csv)
-country="${f%_email_leads.csv}"
+# f=(*_email_leads.csv)
+# country="${f%_email_leads.csv}"
 
-mv sent_email.log  "$country/"
-mv "$country"_email_leads.csv "$country/"
+# mv sent_email.log  "$country/"
+# mv "$country"_email_leads.csv "$country/"

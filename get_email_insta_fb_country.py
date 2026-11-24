@@ -422,10 +422,25 @@ def main() -> None:
         continue
 
       before_csvs = {p.resolve() for p in scraper_dir.rglob("*.csv")}
+      # scrape_cmd = [
+      #     sys.executable,
+      #     str(scrape_py),
+      #     f"comercios en {city}",
+      #     "--city",
+      #     label,
+      #     "--depth",
+      #     city_depth,
+      #     "--no-website",
+      # ]
+      query_prefix = {
+          "es": "comercios en",
+          "en": "businesses in",
+          "fr": "commerces à",
+      }.get(args.lang.lower(), "businesses in")
       scrape_cmd = [
           sys.executable,
           str(scrape_py),
-          f"comercios en {city}",
+          f"{query_prefix} {city}",
           "--city",
           label,
           "--depth",
@@ -434,9 +449,16 @@ def main() -> None:
       ]
       print(f"\n[SCRAPE {idx}/{len(cities)}] {' '.join(scrape_cmd)}")
       rc = subprocess.run(scrape_cmd, cwd=str(scraper_dir)).returncode
+      # if rc != 0:
+      #   print(f"[ERROR] Scraper exited with status {rc} for city '{city}'.")
+      #   sys.exit(rc)
       if rc != 0:
-        print(f"[ERROR] Scraper exited with status {rc} for city '{city}'.")
-        sys.exit(rc)
+        print(
+            f"[WARN] Scraper returned 0 results / status {rc} for '{city}',"
+            " skipping..."
+        )
+        time.sleep(5)
+        continue
 
       time.sleep(1)
       raw_csv = newest_scraped_csv(before_csvs, scraper_dir)

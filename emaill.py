@@ -131,16 +131,38 @@ def generate_startup_message(
 
   prompt = (
       f"generate a message of this country language ({country})\n"
-      "Write a short, friendly cold outreach email offering to create a "
-      "professional website for {BUSINESS_NAME}, which we found on Google Maps, "
-      "to help them get more customers. Ask if they would like to see a quick "
-      "example, and sign off as BOURAIS business.\n"
+      "Translate and adapt this exact message for {BUSINESS_NAME} into the "
+      "language of {country}, keeping {BUSINESS_NAME} intact and always "
+      "ending with bourais business:\n\n"
+      "Hi! I found your business on Google Maps and noticed you don't seem to "
+      "have a website.\n\n"
+      "I'm a web developer, and I think your business could benefit from a "
+      "simple website where customers can discover your services, photos, "
+      "opening hours and contact information.\n\n"
+      "I'd be happy to create a personalized website demo for your business, "
+      "completely free, with no obligation.\n\n"
+      "Would you be interested in seeing it?\n\n"
+      "Best regards!\n"
+      "bourais business\n\n"
       f"Write ONLY in the main language of {country} (no English commentary).\n"
       "Format:\n"
       "SUBJECT: <short subject>\n"
       "BODY:\n"
-      "<short email body>"
+      "<email body>"
   )
+
+  # prompt = (
+  #     f"generate a message of this country language ({country})\n"
+  #     "Write a short, friendly cold outreach email offering to create a "
+  #     "professional website for {BUSINESS_NAME}, which we found on Google Maps, "
+  #     "to help them get more customers. Ask if they would like to see a quick "
+  #     "example, and sign off as BOURAIS business.\n"
+  #     f"Write ONLY in the main language of {country} (no English commentary).\n"
+  #     "Format:\n"
+  #     "SUBJECT: <short subject>\n"
+  #     "BODY:\n"
+  #     "<short email body>"
+  # )
 
   payload = {
       "model": model,
@@ -420,7 +442,10 @@ def main() -> None:
   total_leads = len(all_leads)
 
   csv_line_count = count_csv_lines(csv_path)
-  effective_limit = args.limit if args.limit > 0 else csv_line_count
+
+  # effective_limit = args.limit if args.limit > 0 else csv_line_count
+  effective_limit = min(args.limit, 80) if args.limit > 0 else min(csv_line_count, 80)
+
   print(colorize(f"limit set to {effective_limit} (from {csv_path.name})", CYAN))
 
   for idx, (name, addr) in enumerate(all_leads, 1):
