@@ -181,11 +181,9 @@ def detect_language_and_generate_dm(
   if not template:
     sys.exit(colorize("Error: Ollama returned an empty DM template.", RED))
 
+  #to check 
   if "{BUSINESS_NAME}" not in template:
     template = template.replace("{business_name}", "{BUSINESS_NAME}")
-    if "{BUSINESS_NAME}" not in template:
-      template = f"{template} ({{BUSINESS_NAME}})"
-
   return language, template
 
 
@@ -682,13 +680,26 @@ def main() -> None:
         close_ig_chat(page)
         continue
 
+      # try:
+      #   chat_box.click(timeout=5000)
+      #   time.sleep(random.uniform(0.6, 1.2))
+      #   chat_box.press_sequentially(
+      #       dm_text, delay=random.randint(25, 55)
+      #   )
+      #   time.sleep(random.uniform(1.0, 2.0))
+                    #
       try:
-        chat_box.click(timeout=5000)
-        time.sleep(random.uniform(0.6, 1.2))
-        chat_box.press_sequentially(
-            dm_text, delay=random.randint(25, 55)
-        )
-        time.sleep(random.uniform(1.0, 2.0))
+        chat_box.click(timeout=8000)
+        time.sleep(random.uniform(0.5, 1.0))
+        try:
+          chat_box.press_sequentially(
+              dm_text, delay=random.randint(5, 15), timeout=60000
+          )
+        except Exception:
+          chat_box.click(timeout=5000)
+          page.keyboard.insert_text(dm_text)
+        time.sleep(random.uniform(0.8, 1.5))
+
 
         if args.dry_run:
           sent_count += 1

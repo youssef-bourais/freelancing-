@@ -3,7 +3,7 @@
 
 # Send live using GMAIL_USER and GMAIL_APP_PASSWORD from your environment or .env
 # python3 emailqwen.py *_email_leads.csv --limit 81
-python3 emaill.py *_email_leads.csv 
+python3 emaill.py ireland_email_leads.csv --limit 80 
 
 # f=(*_email_leads.csv)
 # country="${f%_email_leads.csv}"

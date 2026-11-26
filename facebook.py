@@ -56,40 +56,6 @@ def extract_country_from_filename(csv_path: Path) -> str:
     )
   return country
 
-#
-# def clean_qwen_response(raw_text: str) -> str:
-#   """Remove reasoning tags/lines and return a single clean message."""
-#   if not raw_text:
-#     return ""
-#
-#   text = raw_text.strip()
-#   text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-#   if "</think>" in text:
-#     text = text.split("</think>")[-1].strip()
-#
-#   lines = []
-#   for line in text.splitlines():
-#     s = line.strip()
-#     if not s:
-#       continue
-#     low = s.lower()
-#     if low == "think" or low.startswith((
-#         "thinking",
-#         "thought:",
-#         "analysis:",
-#         "note:",
-#         "translation:",
-#         "here is",
-#     )):
-#       continue
-#
-#   msg = " ".join(lines).strip()
-#   msg = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", msg).strip()
-#   msg = msg.strip('"').strip("'").strip()
-#   msg = re.sub(r"\s+", " ", msg).strip()
-#   return msg
-
-
 def clean_qwen_response(raw_text: str) -> str:
   """Remove reasoning tags/lines and return a single clean message."""
   if not raw_text:
@@ -123,36 +89,6 @@ def clean_qwen_response(raw_text: str) -> str:
   msg = re.sub(r"\s+", " ", msg).strip()
   return msg
 
-# def fallback_template_for_country(country: str) -> str:
-#   """Safe fallback template using {BUSINESS_NAME} if Qwen fails."""
-#   c = country.lower().strip()
-#   if c in ("spain", "espana", "españa"):
-#     return (
-#         "Hola {BUSINESS_NAME}, hemos encontrado vuestro negocio en Google Maps "
-#         "y os ofrecemos crear una página web profesional para conseguir más "
-#         "clientes. ¿Os gustaría ver un ejemplo?"
-#     )
-#   if c in (
-#       "france",
-#       "maroc",
-#       "morocco",
-#       "belgium",
-#       "belgique",
-#       "algeria",
-#       "tunisia",
-#   ):
-#     return (
-#         "Bonjour {BUSINESS_NAME}, nous avons trouvé votre page sur Google Maps "
-#         "et vous proposons la création d'un site web professionnel pour "
-#         "attirer plus de clients. Souhaitez-vous voir un exemple ?"
-#     )
-#   return (
-#       "Hello {BUSINESS_NAME}, we found your business on Google Maps and "
-#       "offer to create a professional website to help you get more "
-#       "customers. Would you like to see an example?"
-#   )
-
-
 def call_ollama(
     system_prompt: str,
     user_prompt: str,
@@ -179,110 +115,6 @@ def call_ollama(
   return clean_qwen_response(content)
 
 
-# def detect_language_and_generate_template(
-#     country: str,
-#     model: str,
-#     ollama_url: str,
-# ) -> tuple[str, str]:
-#   """
-#   Called ONCE at startup: detects spoken language for `country` and generates
-#   a single-line message template containing `{BUSINESS_NAME}`.
-#   """
-#   fallback = fallback_template_for_country(country)
-#
-#   try:
-#     lang_raw = call_ollama(
-#         system_prompt=(
-#             "Output ONLY the primary spoken language of the country in one or "
-#             "two words (e.g., Spanish, French, Arabic, English). No extra text."
-#         ),
-#         user_prompt=f"Country: {country}",
-#         model=model,
-#         ollama_url=ollama_url,
-#         num_predict=20,
-#         temperature=0.0,
-#     )
-#     words = re.findall(r"[A-Za-zÀ-ÿ-]+", lang_raw)
-#     language = words[-1].lower() if words else "spanish"
-#   except Exception as exc:
-#     language = "spanish"
-#     print(colorize(f"language detection warning ({exc}) -> using {language}", RED))
-#
-#   print(colorize(f"country : {country} | language : {language}", CYAN))
-#   print(
-#       colorize(
-#           f"ollama generate message in {language} for ({country})...",
-#           MAGENTA,
-#       )
-#   )
-#
-  # prompt = (
-  #     f"Country: {country}\n"
-  #     f"Spoken language: {language}\n"
-  #     "Write ONE short, friendly Facebook outreach message in that language.\n"
-  #     "Requirements:\n"
-  #     "- Keep the exact placeholder {BUSINESS_NAME} where the business name goes.\n"
-  #     "- Mention that we found {BUSINESS_NAME} on Google Maps and offer to "
-  #     "create a professional website to help get more customers.\n"
-  #     "- Ask if they want a quick example and sign off as BOURAIS business.\n"
-  #     "- Keep it to 4 short sentences and always start with hello.\n"
-  #     "- Output ONLY the message text with no notes or explanations."
-  # )
-  #
-  # prompt = (
-  #     f"Country: {country}\n"
-  #     f"Spoken language: {language}\n"
-  #     "Translate and adapt this exact Facebook outreach message for "
-  #     "{BUSINESS_NAME} into "
-  #     f"{language}:\n\n"
-  #     "Hi! I found your business on Google Maps and noticed you don't seem to "
-  #     "have a website.\n\n"
-  #     "I'm a web developer, and I think your business could benefit from a "
-  #     "simple website where customers can discover your services, photos, "
-  #     "opening hours and contact information.\n\n"
-  #     "I'd be happy to create a personalized website demo for your business, "
-  #     "completely free, with no obligation.\n\n"
-  #     "Would you be interested in seeing it?\n\n"
-  #     "Best regards!\n"
-  #     "bourais business\n\n"
-  #     "Requirements:\n"
-  #     "- Keep the exact placeholder {BUSINESS_NAME} where the business name goes.\n"
-  #     "- Always end with bourais business.\n"
-  #     "- Keep it on a single line.\n"
-  #     "- Output ONLY the message text with no notes or explanations."
-  # )
-  #
-  # try:
-  #   cleaned = call_ollama(
-  #       system_prompt=(
-  #           f"You write short outreach messages in {language}. Output ONLY "
-  #           "the final message text."
-  #       ),
-  #       user_prompt=prompt,
-  #       model=model,
-  #       ollama_url=ollama_url,
-  #       num_predict=140,
-  #       temperature=0.2,
-  #   )
-  #   if not cleaned or len(cleaned) > 450:
-  #     print(
-  #         colorize(
-  #             "startup template empty/too long -> using fallback",
-  #             YELLOW,
-  #         )
-  #     )
-  #     return language, fallback
-  #   if "{BUSINESS_NAME}" not in cleaned:
-  #     cleaned = cleaned.replace("{business_name}", "{BUSINESS_NAME}")
-  #     if "{BUSINESS_NAME}" not in cleaned:
-  #       cleaned = f"{cleaned} ({'{BUSINESS_NAME}'})"
-  #   return language, cleaned
-  # except Exception as exc:
-  #   print(colorize(f"ollama warning ({exc}) -> using fallback", RED))
-  #   return language, fallback
-#
-#
-#
 def detect_language_and_generate_template(
     country: str,
     model: str,
@@ -371,108 +203,12 @@ def detect_language_and_generate_template(
       sys.exit(
           colorize("Error: Ollama returned an empty message template.", RED)
       )
+    ## to check
     if "{BUSINESS_NAME}" not in cleaned:
       cleaned = cleaned.replace("{business_name}", "{BUSINESS_NAME}")
-      if "{BUSINESS_NAME}" not in cleaned:
-        cleaned = f"{cleaned} ({{BUSINESS_NAME}})"
     return language, cleaned
   except Exception as exc:
     sys.exit(colorize(f"Error: Ollama message generation failed: {exc}", RED))
-
-# def detect_language_and_generate_template(
-#     country: str,
-#     model: str,
-#     ollama_url: str,
-# ) -> tuple[str, str]:
-#   """
-#   Called ONCE at startup: detects spoken language for `country` and always
-#   generates a single-line message template in that language containing `{BUSINESS_NAME}`.
-#   """
-#   try:
-#     lang_raw = call_ollama(
-#         system_prompt=(
-#             "Output ONLY the primary spoken language of the country in one or "
-#             "two words (e.g., Spanish, French, Arabic, English). No extra text."
-#         ),
-#         user_prompt=f"Country: {country}",
-#         model=model,
-#         ollama_url=ollama_url,
-#         num_predict=20,
-#         temperature=0.0,
-#     )
-#     words = re.findall(r"[A-Za-zÀ-ÿ-]+", lang_raw)
-#     language = words[-1].lower() if words else "spanish"
-#   except Exception as exc:
-#     sys.exit(
-#         colorize(f"Error: Ollama language detection failed: {exc}", RED)
-#     )
-#
-#   print(colorize(f"country : {country} | language : {language}", CYAN))
-#   print(
-#       colorize(
-#           f"ollama generate message in {language} for ({country})...",
-#           MAGENTA,
-#       )
-#   )
-#
-#   prompt = (
-#       f"Country: {country}\n"
-#       f"Spoken language: {language}\n"
-#       f"Write this outreach message in {language} ONLY (do NOT output English "
-#       f"unless the country's spoken language is English):\n\n"
-#       "Hi! I found your business on Google Maps and noticed you don't seem to "
-#       "have a website.\n\n"
-#       "I'm a web developer, and I think your business could benefit from a "
-#       "simple website where customers can discover your services, photos, "
-#       "opening hours and contact information.\n\n"
-#       "I'd be happy to create a personalized website demo for your business, "
-#       "completely free, with no obligation.\n\n"
-#       "Would you be interested in seeing it?\n\n"
-#       "Best regards!\n"
-#       "bourais business\n\n"
-#       "Requirements:\n"
-#       f"- Write 100% in {language}.\n"
-#       "- Keep the exact placeholder {BUSINESS_NAME} where the business name goes.\n"
-#       "- Always end with bourais business.\n"
-#       "- Keep it on a single line.\n"
-#       "- Output ONLY the message text with no notes or explanations."
-#   )
-#
-#   try:
-#     cleaned = call_ollama(
-#         system_prompt=(
-#             f"You write short outreach messages strictly in {language}. "
-#             f"Never write in English unless {language} is english. Output ONLY "
-#             "the final message text."
-#         ),
-#         user_prompt=prompt,
-#         model=model,
-#         ollama_url=ollama_url,
-#         num_predict=220,
-#         temperature=0.2,
-#     )
-#     if not cleaned:
-#       cleaned = call_ollama(
-#           system_prompt=(
-#               f"Translate and output this message strictly in {language} only."
-#           ),
-#           user_prompt=prompt,
-#           model=model,
-#           ollama_url=ollama_url,
-#           num_predict=220,
-#           temperature=0.2,
-#       )
-#     if not cleaned:
-#       sys.exit(
-#           colorize("Error: Ollama returned an empty message template.", RED)
-#       )
-#     if "{BUSINESS_NAME}" not in cleaned:
-#       cleaned = cleaned.replace("{business_name}", "{BUSINESS_NAME}")
-#       if "{BUSINESS_NAME}" not in cleaned:
-#         cleaned = f"{cleaned} ({'{BUSINESS_NAME}'})"
-#     return language, cleaned
-#   except Exception as exc:
-#     sys.exit(colorize(f"Error: Ollama message generation failed: {exc}", RED))
 
 
 def normalize_fb_url(raw_url: str) -> str:
@@ -678,9 +414,15 @@ def dismiss_unsent_popup_if_any(page) -> None:
 
 def send_message_and_verify(page, chat_box, message_text: str) -> bool:
   """Type `message_text`, press Send/Enter once, and wait for send to finish."""
-  chat_box.click(timeout=5000)
+  chat_box.click(timeout=8000)
   time.sleep(0.5)
-  chat_box.press_sequentially(message_text, delay=random.randint(20, 45))
+  try:
+    chat_box.press_sequentially(
+        message_text, delay=random.randint(5, 15), timeout=60000
+    )
+  except Exception:
+    chat_box.click(timeout=5000)
+    page.keyboard.insert_text(message_text)
   time.sleep(0.8)
 
   page.keyboard.press("Enter")
@@ -706,6 +448,8 @@ def send_message_and_verify(page, chat_box, message_text: str) -> bool:
 
   time.sleep(1.5)
   return True
+
+
 
 
 def close_messenger_chat(page) -> None:
@@ -968,12 +712,23 @@ def main() -> None:
 
       try:
         print(colorize(f"sending message to {name} ({fb_url})", GREEN))
+        # if args.dry_run:
+        #   chat_box.click(timeout=5000)
+        #   time.sleep(0.5)
+        #   chat_box.press_sequentially(
+        #       message_text, delay=random.randint(20, 45)
+        #   )
         if args.dry_run:
-          chat_box.click(timeout=5000)
+          chat_box.click(timeout=8000)
           time.sleep(0.5)
-          chat_box.press_sequentially(
-              message_text, delay=random.randint(20, 45)
-          )
+          try:
+            chat_box.press_sequentially(
+                message_text, delay=random.randint(5, 15), timeout=60000
+            )
+          except Exception:
+            chat_box.click(timeout=5000)
+            page.keyboard.insert_text(message_text)
+
           sent_count += 1
           print(colorize(f"[dry-run] typed message for {name}", GREEN))
         else:

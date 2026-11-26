@@ -133,7 +133,7 @@ def generate_startup_message(
       f"generate a message of this country language ({country})\n"
       "Translate and adapt this exact message for {BUSINESS_NAME} into the "
       "language of {country}, keeping {BUSINESS_NAME} intact and always "
-      "ending with bourais business:\n\n"
+      "ending the message with bourais business:\n\n"
       "Hi! I found your business on Google Maps and noticed you don't seem to "
       "have a website.\n\n"
       "I'm a web developer, and I think your business could benefit from a "
@@ -200,9 +200,11 @@ def generate_startup_message(
         )
     )
 
+  #to check business name at the end
+  
   if "{BUSINESS_NAME}" not in subject and "{BUSINESS_NAME}" not in body:
-    body = f"{body}\n\n({'{BUSINESS_NAME}'})"
-
+    subject = subject.replace("{business_name}", "{BUSINESS_NAME}")
+    body = body.replace("{business_name}", "{BUSINESS_NAME}")
   return subject, body
 
 
