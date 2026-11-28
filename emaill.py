@@ -2,8 +2,8 @@
 """
 Hands-free cold email outreach script for `<country>_email_leads.csv`.
 - Extracts country name from CSV filename (e.g., `spain`).
-- Contacts Ollama (`qwen2.5:7b`) ONCE at startup to generate the email in that
-  country's language.
+- Uses `COUNTRY_LANGUAGE_MAP` / Ollama (`qwen2.5:7b`) ONCE at startup to resolve
+  the country's main business language and generate the email template.
 - Checks `sent_email.log` before every send and skips already-logged emails.
 - Sends via SMTP, appends newly sent emails to `sent_email.log`, and prints a
   final summary.
@@ -24,6 +24,46 @@ import requests
 
 OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+COUNTRY_LANGUAGE_MAP = {
+    "ireland": "English",
+    "united kingdom": "English",
+    "uk": "English",
+    "england": "English",
+    "scotland": "English",
+    "wales": "English",
+    "united states": "English",
+    "usa": "English",
+    "canada": "English",
+    "australia": "English",
+    "new zealand": "English",
+    "spain": "Spanish",
+    "españa": "Spanish",
+    "italy": "Italian",
+    "italia": "Italian",
+    "france": "French",
+    "germany": "German",
+    "portugal": "Portuguese",
+    "morocco": "French",
+    "maroc": "French",
+    "belgium": "French",
+    "switzerland": "German",
+    "netherlands": "Dutch",
+}
+
+ENGLISH_SUBJECT = "Website demo for {BUSINESS_NAME}"
+ENGLISH_BODY = (
+    "Hi {BUSINESS_NAME}! I found your business on Google Maps and noticed you don't seem to "
+    "have a website.\n\n"
+    "I'm a web developer, and I think your business could benefit from a "
+    "simple website where customers can discover your services, photos, "
+    "opening hours and contact information.\n\n"
+    "I'd be happy to create a personalized website demo for your business, "
+    "completely free, with no obligation.\n\n"
+    "Would you be interested in seeing it?\n\n"
+    "Best regards!\n"
+    "bourais business"
+)
 
 # Distinct ANSI colors per step
 RESET = "\033[0m"
@@ -112,57 +152,10 @@ def extract_clean_email_parts(raw: str, country: str) -> tuple[str, str]:
   return default_subject, text
 
 
-def generate_startup_message(
-    country: str,
-    model: str,
-    ollama_url: str,
-) -> tuple[str, str]:
-  """
-  Runs ONCE at startup: asks Ollama to generate a message in the language of
-  `country`. Returns (subject_template, body_template).
-  """
-  print(colorize(f"country : {country} | model : {model}", CYAN))
-  print(
-      colorize(
-          f"ollama generate a message in the language of ({country})...",
-          MAGENTA,
-      )
-  )
-
-  prompt = (
-      f"generate a message of this country language ({country})\n"
-      "Translate and adapt this exact message for {BUSINESS_NAME} into the "
-      "language of {country}, keeping {BUSINESS_NAME} intact and always "
-      "ending the message with bourais business:\n\n"
-      "Hi! I found your business on Google Maps and noticed you don't seem to "
-      "have a website.\n\n"
-      "I'm a web developer, and I think your business could benefit from a "
-      "simple website where customers can discover your services, photos, "
-      "opening hours and contact information.\n\n"
-      "I'd be happy to create a personalized website demo for your business, "
-      "completely free, with no obligation.\n\n"
-      "Would you be interested in seeing it?\n\n"
-      "Best regards!\n"
-      "bourais business\n\n"
-      f"Write ONLY in the main language of {country} (no English commentary).\n"
-      "Format:\n"
-      "SUBJECT: <short subject>\n"
-      "BODY:\n"
-      "<email body>"
-  )
-
-  # prompt = (
-  #     f"generate a message of this country language ({country})\n"
-  #     "Write a short, friendly cold outreach email offering to create a "
-  #     "professional website for {BUSINESS_NAME}, which we found on Google Maps, "
-  #     "to help them get more customers. Ask if they would like to see a quick "
-  #     "example, and sign off as BOURAIS business.\n"
-  #     f"Write ONLY in the main language of {country} (no English commentary).\n"
-  #     "Format:\n"
-  #     "SUBJECT: <short subject>\n"
-  #     "BODY:\n"
-  #     "<short email body>"
-  # )
+def detect_business_language(country: str, model: str, ollama_url: str) -> str:
+  mapped = COUNTRY_LANGUAGE_MAP.get(country.strip().lower())
+  if mapped:
+    return mapped
 
   payload = {
       "model": model,
@@ -171,16 +164,84 @@ def generate_startup_message(
           {
               "role": "system",
               "content": (
-                  "Output ONLY the final email in the requested country's "
-                  "language using SUBJECT: and BODY:. Never explain your "
-                  "reasoning or repeat instructions."
+                  "Output ONLY the primary language used for business emails in "
+                  "the given country, in ONE word (e.g., English, Polish, "
+                  "Greek, Arabic). No extra text."
+              ),
+          },
+          {"role": "user", "content": f"Country: {country}"},
+      ],
+      "options": {"temperature": 0.0, "num_predict": 15},
+  }
+  try:
+    resp = requests.post(ollama_url, json=payload, timeout=60)
+    resp.raise_for_status()
+    raw = (resp.json().get("message") or {}).get("content", "")
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+    words = re.findall(r"[A-Za-zÀ-ÿ-]+", raw)
+    return words[0].capitalize() if words else "English"
+  except Exception:
+    return "English"
+
+
+def generate_startup_message(
+    country: str,
+    model: str,
+    ollama_url: str,
+) -> tuple[str, str]:
+  """
+  Runs ONCE at startup: resolves the main business language for `country`.
+  Uses direct English when appropriate, otherwise translates via Ollama.
+  """
+  target_lang = detect_business_language(country, model, ollama_url)
+  print(
+      colorize(
+          f"country : {country} | language : {target_lang} | model : {model}",
+          CYAN,
+      )
+  )
+
+  if target_lang.lower() == "english":
+    return ENGLISH_SUBJECT, ENGLISH_BODY
+
+  print(
+      colorize(
+          f"ollama translating message into {target_lang} for ({country})...",
+          MAGENTA,
+      )
+  )
+
+  prompt = (
+      f"Translate the email below accurately into {target_lang}.\n"
+      "Keep {BUSINESS_NAME} unchanged.\n"
+      "Always end the body with:\n"
+      "bourais business\n\n"
+      "Do not add extra sentences, commentary, or explanations.\n\n"
+      "ORIGINAL:\n"
+      f"{ENGLISH_BODY}\n\n"
+      "Respond ONLY in this format:\n"
+      "SUBJECT: <short subject>\n"
+      "BODY:\n"
+      "<translated email>"
+  )
+
+  payload = {
+      "model": model,
+      "stream": False,
+      "messages": [
+          {
+              "role": "system",
+              "content": (
+                  f"You are a professional business translator. Translate "
+                  f"strictly into {target_lang} using SUBJECT: and BODY:. "
+                  "Output nothing else."
               ),
           },
           {"role": "user", "content": prompt},
       ],
       "options": {
-          "temperature": 0.25,
-          "num_predict": 300,
+          "temperature": 0.1,
+          "num_predict": 400,
       },
   }
 
@@ -189,22 +250,23 @@ def generate_startup_message(
     resp.raise_for_status()
     raw = (resp.json().get("message") or {}).get("content", "")
   except Exception as exc:
-    sys.exit(colorize(f"Error: Ollama failed: {exc}", RED))
+    print(colorize(f"Ollama error ({exc}) -> using English template", RED))
+    return ENGLISH_SUBJECT, ENGLISH_BODY
 
   subject, body = extract_clean_email_parts(raw, country)
-  if not subject or not body:
-    sys.exit(
-        colorize(
-            f"Error: Could not parse clean SUBJECT/BODY from Ollama output:\n{raw}",
-            RED,
-        )
+  if not subject or len(body) < 80:
+    print(
+        colorize("Invalid/short translation -> using English template", YELLOW)
     )
+    return ENGLISH_SUBJECT, ENGLISH_BODY
 
-  #to check business name at the end
-  
   if "{BUSINESS_NAME}" not in subject and "{BUSINESS_NAME}" not in body:
     subject = subject.replace("{business_name}", "{BUSINESS_NAME}")
     body = body.replace("{business_name}", "{BUSINESS_NAME}")
+
+  if not body.lower().endswith("bourais business"):
+    body = f"{body.rstrip()}\n\nbourais business"
+
   return subject, body
 
 
@@ -445,8 +507,9 @@ def main() -> None:
 
   csv_line_count = count_csv_lines(csv_path)
 
-  # effective_limit = args.limit if args.limit > 0 else csv_line_count
-  effective_limit = min(args.limit, 80) if args.limit > 0 else min(csv_line_count, 80)
+  effective_limit = (
+      min(args.limit, 80) if args.limit > 0 else min(csv_line_count, 80)
+  )
 
   print(colorize(f"limit set to {effective_limit} (from {csv_path.name})", CYAN))
 

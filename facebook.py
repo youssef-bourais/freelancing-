@@ -2,8 +2,9 @@
 """
 Facebook Page outreach script (`<country>_facebook_leads.csv`).
 1. Extracts country name from CSV filename (e.g., `spain`).
-2. Calls Qwen (`qwen2.5:7b` by default) ONCE at startup to detect the
-   country's spoken language and generate the outreach message template.
+2. Uses `COUNTRY_LANGUAGE_MAP` / Qwen (`qwen2.5:7b` by default) ONCE at startup
+   to resolve the country's spoken language and generate the outreach message
+   template.
 3. Automatically sets the default limit to the number of lines in the CSV
    (unless `--limit N` is passed).
 4. Checks `sent_facebook.log` before each page, skips already-logged URLs,
@@ -23,6 +24,42 @@ from playwright.sync_api import sync_playwright
 import requests
 
 OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
+
+COUNTRY_LANGUAGE_MAP = {
+    "ireland": "English",
+    "united kingdom": "English",
+    "uk": "English",
+    "england": "English",
+    "scotland": "English",
+    "wales": "English",
+    "united states": "English",
+    "usa": "English",
+    "canada": "English",
+    "australia": "English",
+    "new zealand": "English",
+    "spain": "Spanish",
+    "españa": "Spanish",
+    "italy": "Italian",
+    "italia": "Italian",
+    "france": "French",
+    "germany": "German",
+    "portugal": "Portuguese",
+    "morocco": "French",
+    "maroc": "French",
+    "belgium": "French",
+    "switzerland": "German",
+    "netherlands": "Dutch",
+}
+
+ENGLISH_FB_TEMPLATE = (
+    "Hi {BUSINESS_NAME}! I found your business on Google Maps and noticed you "
+    "don't seem to have a website. I'm a web developer, and I think your "
+    "business could benefit from a simple website where customers can discover "
+    "your services, photos, opening hours and contact information. I'd be "
+    "happy to create a personalized website demo for your business, completely "
+    "free, with no obligation. Would you be interested in seeing it? Best "
+    "regards! bourais business"
+)
 
 # Distinct ANSI colors per step
 RESET = "\033[0m"
@@ -55,6 +92,7 @@ def extract_country_from_filename(csv_path: Path) -> str:
         )
     )
   return country
+
 
 def clean_qwen_response(raw_text: str) -> str:
   """Remove reasoning tags/lines and return a single clean message."""
@@ -89,13 +127,14 @@ def clean_qwen_response(raw_text: str) -> str:
   msg = re.sub(r"\s+", " ", msg).strip()
   return msg
 
+
 def call_ollama(
     system_prompt: str,
     user_prompt: str,
     model: str,
     ollama_url: str,
-    num_predict: int = 120,
-    temperature: float = 0.2,
+    num_predict: int = 220,
+    temperature: float = 0.1,
 ) -> str:
   payload = {
       "model": model,
@@ -115,36 +154,50 @@ def call_ollama(
   return clean_qwen_response(content)
 
 
+def detect_business_language(country: str, model: str, ollama_url: str) -> str:
+  mapped = COUNTRY_LANGUAGE_MAP.get(country.strip().lower())
+  if mapped:
+    return mapped
+
+  try:
+    lang_raw = call_ollama(
+        system_prompt=(
+            "Output ONLY the primary language used for business communication "
+            "in the given country, in ONE word (e.g., English, Spanish, "
+            "Italian, French). No extra text."
+        ),
+        user_prompt=f"Country: {country}",
+        model=model,
+        ollama_url=ollama_url,
+        num_predict=15,
+        temperature=0.0,
+    )
+    words = re.findall(r"[A-Za-zÀ-ÿ-]+", lang_raw)
+    return words[0].capitalize() if words else "English"
+  except Exception:
+    return "English"
+
+
 def detect_language_and_generate_template(
     country: str,
     model: str,
     ollama_url: str,
 ) -> tuple[str, str]:
   """
-  Called ONCE at startup: detects spoken language for `country` and always
-  generates a single-line message template in that language containing `{BUSINESS_NAME}`.
+  Called ONCE at startup: resolves the main business language for `country`.
+  Uses direct English when appropriate, otherwise translates via Ollama.
   """
-  default_lang = "italian" if country.strip().lower() in ("italy", "italia") else "english"
+  language = detect_business_language(country, model, ollama_url)
+  print(
+      colorize(
+          f"country : {country} | language : {language} | model : {model}",
+          CYAN,
+      )
+  )
 
-  try:
-    lang_raw = call_ollama(
-        system_prompt=(
-            "Output ONLY the primary spoken language of the country in one "
-            "word (e.g., Italian, Spanish, French, English). No extra text."
-        ),
-        user_prompt=f"Country: {country}",
-        model=model,
-        ollama_url=ollama_url,
-        num_predict=25,
-        temperature=0.0,
-    )
-    words = re.findall(r"[A-Za-zÀ-ÿ-]+", lang_raw)
-    language = words[0].lower() if words else default_lang
-  except Exception as exc:
-    language = default_lang
-    print(colorize(f"language detection warning ({exc}) -> using {language}", RED))
+  if language.lower() == "english":
+    return language, ENGLISH_FB_TEMPLATE
 
-  print(colorize(f"country : {country} | language : {language}", CYAN))
   print(
       colorize(
           f"ollama generate message in {language} for ({country})...",
@@ -153,62 +206,44 @@ def detect_language_and_generate_template(
   )
 
   prompt = (
-      f"Country: {country}\n"
-      f"Spoken language: {language}\n"
-      f"Translate and adapt this exact message for {{BUSINESS_NAME}} into {language}:\n\n"
-      "Hi! I found your business on Google Maps and noticed you don't seem to "
-      "have a website.\n\n"
-      "I'm a web developer, and I think your business could benefit from a "
-      "simple website where customers can discover your services, photos, "
-      "opening hours and contact information.\n\n"
-      "I'd be happy to create a personalized website demo for your business, "
-      "completely free, with no obligation.\n\n"
-      "Would you be interested in seeing it?\n\n"
-      "Best regards!\n"
-      "bourais business\n\n"
-      "Requirements:\n"
-      f"- Write 100% in {language}.\n"
-      "- Keep the exact placeholder {BUSINESS_NAME} where the business name goes.\n"
-      "- Always end with bourais business.\n"
-      "- Keep it on a single line.\n"
-      "- Output ONLY the message text with no notes or explanations."
+      f"Translate the message below accurately into {language}.\n"
+      "Keep {BUSINESS_NAME} unchanged.\n"
+      "Always end with: bourais business\n"
+      "Keep it on a single line.\n"
+      "Do not add extra sentences, commentary, or explanations.\n\n"
+      f"ORIGINAL:\n{ENGLISH_FB_TEMPLATE}"
   )
 
   try:
     cleaned = call_ollama(
         system_prompt=(
             f"You write short outreach messages strictly in {language}. "
-            "Output ONLY the final message text."
+            "Output ONLY a single-line message with no quotes, notes, or "
+            "explanations."
         ),
         user_prompt=prompt,
         model=model,
         ollama_url=ollama_url,
-        num_predict=260,
-        temperature=0.2,
+        num_predict=220,
+        temperature=0.1,
     )
-    if not cleaned:
-      cleaned = call_ollama(
-          system_prompt=(
-              f"Write a short outreach message in {language} for "
-              "{BUSINESS_NAME} offering a free website demo and ending with "
-              "bourais business."
-          ),
-          user_prompt=f"Country: {country}\nLanguage: {language}",
-          model=model,
-          ollama_url=ollama_url,
-          num_predict=260,
-          temperature=0.2,
-      )
-    if not cleaned:
-      sys.exit(
-          colorize("Error: Ollama returned an empty message template.", RED)
-      )
-    ## to check
-    if "{BUSINESS_NAME}" not in cleaned:
-      cleaned = cleaned.replace("{business_name}", "{BUSINESS_NAME}")
-    return language, cleaned
   except Exception as exc:
-    sys.exit(colorize(f"Error: Ollama message generation failed: {exc}", RED))
+    print(colorize(f"Ollama error ({exc}) -> using English template", RED))
+    return language, ENGLISH_FB_TEMPLATE
+
+  if not cleaned or len(cleaned) < 60:
+    print(
+        colorize("Invalid/short translation -> using English template", YELLOW)
+    )
+    return language, ENGLISH_FB_TEMPLATE
+
+  if "{BUSINESS_NAME}" not in cleaned:
+    cleaned = cleaned.replace("{business_name}", "{BUSINESS_NAME}")
+
+  if not cleaned.lower().endswith("bourais business"):
+    cleaned = f"{cleaned.rstrip()} bourais business"
+
+  return language, cleaned
 
 
 def normalize_fb_url(raw_url: str) -> str:
@@ -450,8 +485,6 @@ def send_message_and_verify(page, chat_box, message_text: str) -> bool:
   return True
 
 
-
-
 def close_messenger_chat(page) -> None:
   """Close open Messenger chat popups cleanly after sending."""
   dismiss_unsent_popup_if_any(page)
@@ -571,8 +604,9 @@ def main() -> None:
   total_leads = len(all_leads)
   csv_line_count = count_csv_lines(csv_path)
 
-  # effective_limit = args.limit if args.limit > 0 else csv_line_count
-  effective_limit = min(args.limit, 40) if args.limit > 0 else min(csv_line_count, 40)
+  effective_limit = (
+      min(args.limit, 40) if args.limit > 0 else min(csv_line_count, 40)
+  )
 
   filtered_out = max(0, raw_rows - total_leads)
   print(
@@ -712,12 +746,6 @@ def main() -> None:
 
       try:
         print(colorize(f"sending message to {name} ({fb_url})", GREEN))
-        # if args.dry_run:
-        #   chat_box.click(timeout=5000)
-        #   time.sleep(0.5)
-        #   chat_box.press_sequentially(
-        #       message_text, delay=random.randint(20, 45)
-        #   )
         if args.dry_run:
           chat_box.click(timeout=8000)
           time.sleep(0.5)

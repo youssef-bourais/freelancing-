@@ -2,8 +2,9 @@
 """
 Hands-free Instagram DM automation for `<country>_instagram_leads.csv`.
 - Extracts country name from CSV filename (e.g., `spain`).
-- Contacts Ollama (`qwen2.5:7b`) ONCE at startup to detect the spoken language
-  and generate a single-line outreach message template with `{BUSINESS_NAME}`.
+- Uses `COUNTRY_LANGUAGE_MAP` / Ollama (`qwen2.5:7b`) ONCE at startup to resolve
+  the country's main business language and generate a single-line DM template
+  with `{BUSINESS_NAME}`.
 - Automatically sets the default limit to the number of lines in the CSV
   (unless `--limit N` is passed).
 - Checks `sent_instagram.log`, skips already-sent accounts, clicks the
@@ -23,6 +24,42 @@ from playwright.sync_api import sync_playwright
 import requests
 
 OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
+
+COUNTRY_LANGUAGE_MAP = {
+    "ireland": "English",
+    "united kingdom": "English",
+    "uk": "English",
+    "england": "English",
+    "scotland": "English",
+    "wales": "English",
+    "united states": "English",
+    "usa": "English",
+    "canada": "English",
+    "australia": "English",
+    "new zealand": "English",
+    "spain": "Spanish",
+    "españa": "Spanish",
+    "italy": "Italian",
+    "italia": "Italian",
+    "france": "French",
+    "germany": "German",
+    "portugal": "Portuguese",
+    "morocco": "French",
+    "maroc": "French",
+    "belgium": "French",
+    "switzerland": "German",
+    "netherlands": "Dutch",
+}
+
+ENGLISH_DM_TEMPLATE = (
+    "Hi {BUSINESS_NAME}! I found your business on Google Maps and noticed you "
+    "don't seem to have a website. I'm a web developer, and I think your "
+    "business could benefit from a simple website where customers can discover "
+    "your services, photos, opening hours and contact information. I'd be "
+    "happy to create a personalized website demo for your business, completely "
+    "free, with no obligation. Would you be interested in seeing it? Best "
+    "regards! bourais business"
+)
 
 # Distinct ANSI colors per step
 RESET = "\033[0m"
@@ -71,8 +108,8 @@ def call_ollama(
     user_prompt: str,
     model: str,
     ollama_url: str,
-    num_predict: int = 160,
-    temperature: float = 0.25,
+    num_predict: int = 220,
+    temperature: float = 0.1,
 ) -> str:
   payload = {
       "model": model,
@@ -92,33 +129,49 @@ def call_ollama(
   return clean_model_text(content)
 
 
+def detect_business_language(country: str, model: str, ollama_url: str) -> str:
+  mapped = COUNTRY_LANGUAGE_MAP.get(country.strip().lower())
+  if mapped:
+    return mapped
+
+  try:
+    lang_raw = call_ollama(
+        system_prompt=(
+            "Output ONLY the primary language used for business communication "
+            "in the given country, in ONE word (e.g., English, Spanish, "
+            "Italian, French). No extra text."
+        ),
+        user_prompt=f"Country: {country}",
+        model=model,
+        ollama_url=ollama_url,
+        num_predict=15,
+        temperature=0.0,
+    )
+    words = re.findall(r"[A-Za-zÀ-ÿ-]+", lang_raw)
+    return words[0].capitalize() if words else "English"
+  except Exception:
+    return "English"
+
+
 def detect_language_and_generate_dm(
     country: str,
     model: str,
     ollama_url: str,
 ) -> tuple[str, str]:
   """
-  Runs ONCE at startup: detects spoken language for `country` and generates
-  a single-line DM template containing `{BUSINESS_NAME}`.
+  Runs ONCE at startup: resolves the main business language for `country`.
+  Uses direct English when appropriate, otherwise translates via Ollama.
   """
-  try:
-    lang_raw = call_ollama(
-        system_prompt=(
-            "Output ONLY the primary spoken language of the country in one or "
-            "two words (e.g., Spanish, French, Arabic, English). No extra text."
-        ),
-        user_prompt=f"Country: {country}",
-        model=model,
-        ollama_url=ollama_url,
-        num_predict=20,
-        temperature=0.0,
-    )
-  except Exception as exc:
-    sys.exit(colorize(f"Error: Ollama language detection failed: {exc}", RED))
+  language = detect_business_language(country, model, ollama_url)
+  print(
+      colorize(
+          f"country : {country} | language : {language} | model : {model}",
+          CYAN,
+      )
+  )
 
-  words = re.findall(r"[A-Za-zÀ-ÿ-]+", lang_raw)
-  language = words[-1].lower() if words else "spanish"
-  print(colorize(f"country : {country} | language : {language}", CYAN))
+  if language.lower() == "english":
+    return language, ENGLISH_DM_TEMPLATE
 
   print(
       colorize(
@@ -128,62 +181,39 @@ def detect_language_and_generate_dm(
   )
   try:
     template = call_ollama(
-      system_prompt=(
-          f"You write short cold outreach DMs in {language}. Output ONLY "
-          "the message text on a single line with no quotes, notes, or "
-          "explanations. Always keep {BUSINESS_NAME} as the placeholder and "
-          "always end with bourais business."
-      ),
-      user_prompt=(
-          f"Country: {country}\n"
-          f"Spoken language: {language}\n"
-          "Translate and adapt this exact message for {BUSINESS_NAME} into "
-          f"{language}, keeping {{BUSINESS_NAME}} intact and always ending "
-          "with bourais business:\n\n"
-          "Hi! I found your business on Google Maps and noticed you don't seem "
-          "to have a website.\n\n"
-          "I'm a web developer, and I think your business could benefit from a "
-          "simple website where customers can discover your services, photos, "
-          "opening hours and contact information.\n\n"
-          "I'd be happy to create a personalized website demo for your "
-          "business, completely free, with no obligation.\n\n"
-          "Would you be interested in seeing it?\n\n"
-          "Best regards!\n"
-          "bourais business"
-      ),
-      model=model,
-      ollama_url=ollama_url,
-      num_predict=220,
-      temperature=0.25,
+        system_prompt=(
+            f"You write short cold outreach DMs strictly in {language}. "
+            "Output ONLY a single-line message with no quotes, notes, or "
+            "explanations."
+        ),
+        user_prompt=(
+            f"Translate the DM below accurately into {language}.\n"
+            "Keep {BUSINESS_NAME} unchanged.\n"
+            "Always end with: bourais business\n"
+            "Keep it on a single line.\n\n"
+            f"ORIGINAL:\n{ENGLISH_DM_TEMPLATE}"
+        ),
+        model=model,
+        ollama_url=ollama_url,
+        num_predict=220,
+        temperature=0.1,
     )
-    # template = call_ollama(
-    #     system_prompt=(
-    #         f"You write short cold outreach DMs in {language}. Output ONLY "
-    #         "the message text on a single line with no quotes, notes, or "
-    #         "explanations. Always keep {BUSINESS_NAME} as the placeholder."
-    #     ),
-    #     user_prompt=(
-    #         f"Country: {country}\n"
-    #         f"Spoken language: {language}\n"
-    #         "Write a short, friendly Instagram DM offering to create a "
-    #         "professional website for {BUSINESS_NAME}, found on Google Maps, "
-    #         "to help get more customers, and ask if they want a quick example. "
-    #         "Sign off as BOURAIS business."
-    #     ),
-    #     model=model,
-    #     ollama_url=ollama_url,
-    #     num_predict=150,
-    #     temperature=0.25,
-    # )
   except Exception as exc:
-    sys.exit(colorize(f"Error: Ollama message generation failed: {exc}", RED))
+    print(colorize(f"Ollama error ({exc}) -> using English DM template", RED))
+    return language, ENGLISH_DM_TEMPLATE
 
-  if not template:
-    sys.exit(colorize("Error: Ollama returned an empty DM template.", RED))
+  if not template or len(template) < 60:
+    print(
+        colorize("Invalid/short DM translation -> using English DM template", YELLOW)
+    )
+    return language, ENGLISH_DM_TEMPLATE
 
-  #to check 
   if "{BUSINESS_NAME}" not in template:
     template = template.replace("{business_name}", "{BUSINESS_NAME}")
+
+  if not template.lower().endswith("bourais business"):
+    template = f"{template.rstrip()} bourais business"
+
   return language, template
 
 
@@ -560,9 +590,9 @@ def main() -> None:
   total_leads = len(all_leads)
   csv_line_count = count_csv_lines(csv_path)
 
-  # effective_limit = args.limit if args.limit > 0 else csv_line_count
-
-  effective_limit = min(args.limit, 40) if args.limit > 0 else min(csv_line_count, 40)
+  effective_limit = (
+      min(args.limit, 40) if args.limit > 0 else min(csv_line_count, 40)
+  )
   print(
       colorize(
           f"get {total_leads} accounts from {csv_path.name} "
@@ -680,14 +710,6 @@ def main() -> None:
         close_ig_chat(page)
         continue
 
-      # try:
-      #   chat_box.click(timeout=5000)
-      #   time.sleep(random.uniform(0.6, 1.2))
-      #   chat_box.press_sequentially(
-      #       dm_text, delay=random.randint(25, 55)
-      #   )
-      #   time.sleep(random.uniform(1.0, 2.0))
-                    #
       try:
         chat_box.click(timeout=8000)
         time.sleep(random.uniform(0.5, 1.0))
@@ -699,7 +721,6 @@ def main() -> None:
           chat_box.click(timeout=5000)
           page.keyboard.insert_text(dm_text)
         time.sleep(random.uniform(0.8, 1.5))
-
 
         if args.dry_run:
           sent_count += 1
